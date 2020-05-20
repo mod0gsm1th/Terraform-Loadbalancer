@@ -1,0 +1,132 @@
+﻿resource "azurerm_resource_group" "MDSLB" {
+  name     = "MDSLoadBalancerRG"
+  location = "West US"
+}
+
+resource "azurerm_public_ip" "MDSPIP" {
+  name                = "PublicIPForLB"
+  location            = "east US"
+  resource_group_name = azurerm_resource_group.MDSLB.name
+  allocation_method   = "Static"
+}
+
+resource "azurerm_lb" "MDSLB1" {
+  name                = "TestLoadBalancer"
+  location            = "east US"
+  resource_group_name = azurerm_resource_group.MDSLB.name
+
+  frontend_ip_configuration {
+    name                 = "PublicIPAddress"
+    public_ip_address_id = azurerm_public_ip.MDSPIP.id
+  }
+}
+
+resource "azurerm_lb_backend_address_pool" "MDSLBBE" {
+  resource_group_name = azurerm_resource_group.MDSLB.name
+  loadbalancer_id     = azurerm_lb.MDSLB1.id
+  name                = "BackEndAddressPool"
+}
+
+resource "azurerm_lb_rule" "MDSLBRL" {
+  resource_group_name            = azurerm_resource_group.MDSLB.name
+  loadbalancer_id                = azurerm_lb.MDSLB1.id
+  name                           = "LBRule"
+  protocol                       = "Tcp"
+  frontend_port                  = 3389
+  backend_port                   = 3389
+  frontend_ip_configuration_name = "PublicIPAddress"
+}
+#### Note cant create ob rule on basic  load balancer, must be standard
+resource "azurerm_lb_outbound_rule" "MDSLBRLOB" {
+  resource_group_name     = azurerm_resource_group.MDSLB.name
+  loadbalancer_id         = azurerm_lb.MDSLB1.id
+  name                    = "OutboundRule"
+  protocol                = "Tcp"
+  backend_address_pool_id = azurerm_lb_backend_address_pool.MDSLBBE.id
+
+  frontend_ip_configuration {
+    name = "PublicIPAddress"
+  }
+}
+
+resource "azurerm_lb_probe" "MDSLBPRB" {
+  resource_group_name = azurerm_resource_group.MDSLB.name
+  loadbalancer_id     = azurerm_lb.MDSLB1.id
+  name                = "ssh-running-probe"
+  port                = 22
+}
+######
+ ip_configuration {
+        name = "${var.vm_name_prefix}-${count.index}-ipConfig"
+        subnet_id = "${azurerm_subnet.subnet1.id}"
+        private_ip_address_allocation = "dynamic"
+        load_balancer_backend_address_pools_ids = ["${azurerm_lb_backend_address_pool.backend_pool.id}"]
+        load_balancer_inbound_nat_rules_ids = ["${element(azurerm_lb_nat_rule.winrm_nat.*.id, count.index)}"]
+    }
+
+    # VIP address
+resource "azurerm_public_ip" "load_balancer_public_ip" {
+  name                         = "${var.vm_name_prefix}-ip"
+  location                     = "${var.azure_region_fullname}"
+  resource_group_name          = "${azurerm_resource_group.resource_group.name}"
+  public_ip_address_allocation = "dynamic"
+  domain_name_label = "${azurerm_resource_group.resource_group.name}"
+}
+
+# Front End Load Balancer
+resource "azurerm_lb" "load_balancer" {
+  name                = "${var.vm_name_prefix}-lb"
+  location            = "${var.azure_region_fullname}"
+  resource_group_name = "${azurerm_resource_group.resource_group.name}"
+
+  frontend_ip_configuration {
+    name                 = "${var.vm_name_prefix}-ipconfig"
+    public_ip_address_id = "${azurerm_public_ip.load_balancer_public_ip.id}"
+  }
+}
+
+# Back End Address Pool
+resource "azurerm_lb_backend_address_pool" "backend_pool" {
+  location            = "${var.azure_region_fullname}"
+  resource_group_name = "${azurerm_resource_group.resource_group.name}"
+  loadbalancer_id     = "${azurerm_lb.load_balancer.id}"
+  name                = "${var.vm_name_prefix}-backend_address_pool"
+}
+
+# Load Balancer Rule
+resource "azurerm_lb_rule" "load_balancer_http_rule" {
+  location                       = "${var.azure_region_fullname}"
+  resource_group_name            = "${azurerm_resource_group.resource_group.name}"
+  loadbalancer_id                = "${azurerm_lb.load_balancer.id}"
+  name                           = "HTTPRule"
+  protocol                       = "Tcp"
+  frontend_port                  = 80
+  backend_port                   = 80
+  frontend_ip_configuration_name = "${var.vm_name_prefix}-ipconfig"
+  backend_address_pool_id        = "${azurerm_lb_backend_address_pool.backend_pool.id}"
+  probe_id                       = "${azurerm_lb_probe.load_balancer_probe.id}"
+  depends_on                     = ["azurerm_lb_probe.load_balancer_probe"]
+}
+
+resource "azurerm_lb_rule" "load_balancer_https_rule" {
+  location                       = "${var.azure_region_fullname}"
+  resource_group_name            = "${azurerm_resource_group.resource_group.name}"
+  loadbalancer_id                = "${azurerm_lb.load_balancer.id}"
+  name                           = "HTTPSRule"
+  protocol                       = "Tcp"
+  frontend_port                  = 443
+  backend_port                   = 443
+  frontend_ip_configuration_name = "${var.vm_name_prefix}-ipconfig"
+  backend_address_pool_id        = "${azurerm_lb_backend_address_pool.backend_pool.id}"
+  probe_id                       = "${azurerm_lb_probe.load_balancer_probe.id}"
+  depends_on                     = ["azurerm_lb_probe.load_balancer_probe"]
+}
+
+#LB Probe - Checks to see which VMs are healthy and available
+resource "azurerm_lb_probe" "load_balancer_probe" {
+  location            = "${var.azure_region_fullname}"
+  resource_group_name = "${azurerm_resource_group.resource_group.name}"
+  loadbalancer_id     = "${azurerm_lb.load_balancer.id}"
+  name                = "HTTP"
+  port                = 80
+}

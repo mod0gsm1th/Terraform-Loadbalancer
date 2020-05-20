@@ -1,0 +1,311 @@
+﻿resource "azurerm_resource_group" "MDSLB" {
+  name     = "MDSLoadBalancerRG"
+  location = "West US"
+}
+
+resource "azurerm_public_ip" "MDSPIP" {
+  name                = "PublicIPForLB"
+  location            = "east US"
+  resource_group_name = azurerm_resource_group.MDSLB.name
+  allocation_method   = "Static"
+}
+
+resource "azurerm_lb" "MDSLB1" {
+  name                = "TestLoadBalancer"
+  location            = "east US"
+  resource_group_name = azurerm_resource_group.MDSLB.name
+
+  frontend_ip_configuration {
+    name                 = "PublicIPAddress"
+    public_ip_address_id = azurerm_public_ip.MDSPIP.id
+  }
+}
+
+resource "azurerm_lb_backend_address_pool" "MDSLBBE" {
+  resource_group_name = azurerm_resource_group.MDSLB.name
+  loadbalancer_id     = azurerm_lb.MDSLB1.id
+  name                = "BackEndAddressPool"
+}
+
+resource "azurerm_lb_rule" "MDSLBRL" {
+  resource_group_name            = azurerm_resource_group.MDSLB.name
+  loadbalancer_id                = azurerm_lb.MDSLB1.id
+  name                           = "LBRule"
+  protocol                       = "Tcp"
+  frontend_port                  = 3389
+  backend_port                   = 3389
+  frontend_ip_configuration_name = "PublicIPAddress"
+}
+#### Note cant create ob rule on basic  load balancer, must be standard
+#resource "azurerm_lb_outbound_rule" "MDSLBRLOB" {
+#  resource_group_name     = azurerm_resource_group.MDSLB.name
+#  loadbalancer_id         = azurerm_lb.MDSLB1.id
+#  name                    = "OutboundRule"
+#  protocol                = "Tcp"
+#  backend_address_pool_id = azurerm_lb_backend_address_pool.MDSLBBE.id
+#
+#  frontend_ip_configuration {
+#    name = "PublicIPAddress"
+ # }
+#}
+
+resource "azurerm_lb_probe" "MDSLBPRB" {
+  resource_group_name = azurerm_resource_group.MDSLB.name
+  loadbalancer_id     = azurerm_lb.MDSLB1.id
+  name                = "ssh-running-probe"
+  port                = 22
+}
+### Functiion App ####
+resource "azurerm_storage_account" "MDSFAStor" {
+  name                     = "functionsappstor"
+  resource_group_name      = azurerm_resource_group.MDSLB.name
+  location                 = azurerm_resource_group.MDSLB.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+}
+
+resource "azurerm_app_service_plan" "MDSSVCP" {
+  name                = "azure-functions-test-service-plan"
+  location            = azurerm_resource_group.MDSLB.location
+  resource_group_name = azurerm_resource_group.MDSLB.name
+  kind                = "FunctionApp"
+
+  sku {
+    tier = "Dynamic"
+    size = "Y1"
+  }
+}
+
+resource "azurerm_function_app" "MDSFA" {
+  name                      = "mds-azure-functions"
+  location                  = azurerm_resource_group.MDSLB.location
+  resource_group_name       = azurerm_resource_group.MDSLB.name
+  app_service_plan_id       = azurerm_app_service_plan.MDSSVCP.id
+  storage_connection_string = azurerm_storage_account.MDSFAStor.primary_connection_string
+}
+#variable "prefix" {
+#  default = "MDSLoadBalancerRG"
+#}
+
+#resource "azurerm_resource_group" "MDSLB" {
+#  name     = "MDSLoadBalancerRG-resources"
+#  location = "West US "
+#}
+
+resource "azurerm_virtual_network" "MDSVNET" {
+  name                = "MDSLoadBalancerRG-network"
+  address_space       = ["10.0.0.0/16"]
+  location            = azurerm_resource_group.MDSLB.location
+  resource_group_name = azurerm_resource_group.MDSLB.name
+}
+
+resource "azurerm_subnet" "internal" {
+  name                 = "internal"
+  resource_group_name  = azurerm_resource_group.MDSLB.name
+  virtual_network_name = azurerm_virtual_network.MDSVNET.name
+  address_prefix       = "10.0.2.0/24"
+}
+
+resource "azurerm_network_interface" "MDSNIC" {
+  name                = "MDSLoadBalancerRG-nic"
+  location            = azurerm_resource_group.MDSLB.location
+  resource_group_name = azurerm_resource_group.MDSLB.name
+
+  ip_configuration {
+    name                          = "testconfiguration1"
+    subnet_id                     = azurerm_subnet.internal.id
+    private_ip_address_allocation = "Dynamic"
+  }
+}
+
+resource "azurerm_virtual_machine" "MDSVM01" {
+  name                  = "MDSLoadBalancerRG-vm"
+  location              = azurerm_resource_group.MDSLB.location
+  resource_group_name   = azurerm_resource_group.MDSLB.name
+  network_interface_ids = [azurerm_network_interface.MDSNIC.id]
+  vm_size               = "Standard_DS1_v2"
+ 
+  # Uncomment this line to delete the OS disk automatically when deleting the VM
+  # delete_os_disk_on_termination = true
+
+  # Uncomment this line to delete the data disks automatically when deleting the VM
+  # delete_data_disks_on_termination = true
+
+  storage_image_reference {
+    publisher = "Canonical"
+    offer     = "UbuntuServer"
+    sku       = "18.04-LTS"
+    version   = "latest"
+  }
+  storage_os_disk {
+    name              = "MDSosdisk1"
+    caching           = "ReadWrite"
+    create_option     = "FromImage"
+    managed_disk_type = "Standard_LRS"
+  }
+  os_profile {
+    computer_name  = "MDSVM"
+    admin_username = "testadmin"
+    admin_password = "Password1234!"
+  }
+  os_profile_linux_config {
+    disable_password_authentication = false
+  }
+  tags = {
+    environment = "staging"
+   }
+}
+resource "azurerm_network_interface" "MDSNIC2" {
+  name                = "MDSLoadBalancerRG-nic2"
+  location            = azurerm_resource_group.MDSLB.location
+  resource_group_name = azurerm_resource_group.MDSLB.name
+
+  ip_configuration {
+    name                          = "testconfiguration1"
+    subnet_id                     = azurerm_subnet.internal.id
+    private_ip_address_allocation = "Dynamic"
+  }
+ }
+### windows VM
+resource "azurerm_virtual_machine" "MDSVM02" {
+  name                  = "MDSLoadBalancerRG-vm2"
+  location              = azurerm_resource_group.MDSLB.location
+  resource_group_name   = azurerm_resource_group.MDSLB.name
+  network_interface_ids = [azurerm_network_interface.MDSNIC2.id]
+  vm_size               = "Standard_DS1_v2"
+ 
+storage_image_reference  {
+        publisher   = "MicrosoftWindowsServer"
+        offer       = "WindowsServer"
+       sku         = "2016-Datacenter"
+       version     = "latest"
+    }
+    storage_os_disk {
+       name          = "MDSosdisk2"
+     #  vhd_uri       = "${azurerm_storage_account.azrmstgacc-stdssdlrs-001.primary_blob_endpoint}${azurerm_storage_container.vhds.name}/dcsazprois002-os.vhd"
+        caching       = "ReadWrite"
+        create_option = "FromImage"
+        os_type       = "Windows"
+    }
+     os_profile {
+        computer_name  = "MDSVM2"
+        admin_username = "testadmin"
+        admin_password = "Password1234!"
+    } 
+os_profile_windows_config {
+    provision_vm_agent  = true
+  }
+ }
+##### add second VNEt for peering test ########
+resource "azurerm_virtual_network" "MDSVNET2" {
+  name                = "MDSLoadBalancerRG-network2"
+  address_space       = ["10.1.2.0/24"]
+  location            = azurerm_resource_group.MDSLB.location
+  resource_group_name = azurerm_resource_group.MDSLB.name
+
+   subnet {
+     name           = "MDSsubnet2"
+    address_prefix = "10.1.2.0/25"
+  } 
+ 
+ }
+# Network Security group
+resource "azurerm_network_security_group" "MDSLBNSG" {
+  name                = "MDSLBSecurityGroup1"
+  location            = azurerm_resource_group.MDSLB.location
+  resource_group_name = azurerm_resource_group.MDSLB.name
+
+  security_rule {
+    name                       = "MDS123"
+    priority                   = 100
+    direction                  = "Inbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "*"
+    source_address_prefix      = "*"
+    destination_address_prefix = "*"
+  }
+
+  tags = {
+    environment = "Production"
+  }
+}
+##### create third windows vm to test peering   ###
+resource "azurerm_virtual_network" "MDSVNET3" {
+  name                = "MDSLoadBalancerRG-network3"
+  address_space       = ["10.10.0.0/16"]
+  location            = azurerm_resource_group.MDSLB.location
+  resource_group_name = azurerm_resource_group.MDSLB.name
+}
+resource "azurerm_subnet" "internal3" {
+  name                 = "internal3"
+  resource_group_name  = azurerm_resource_group.MDSLB.name
+  virtual_network_name = azurerm_virtual_network.MDSVNET3.name
+  address_prefix       = "10.10.2.0/24"
+}
+resource "azurerm_network_interface" "MDSNIC3" {
+  name                = "MDSLoadBalancerRG-nic3"
+  location            = azurerm_resource_group.MDSLB.location
+  resource_group_name = azurerm_resource_group.MDSLB.name
+
+  ip_configuration {
+    name                          = "testconfiguration3"
+    subnet_id                     = azurerm_subnet.internal3.id
+    private_ip_address_allocation = "Dynamic"
+  }
+ } 
+  resource "azurerm_virtual_machine" "MDSVM03" {
+  name                  = "MDSLoadBalancerRG-vm3"
+  location              = azurerm_resource_group.MDSLB.location
+  resource_group_name   = azurerm_resource_group.MDSLB.name
+  network_interface_ids = [azurerm_network_interface.MDSNIC3.id]
+  vm_size               = "Standard_DS1_v2"
+ 
+storage_image_reference  {
+        publisher   = "MicrosoftWindowsServer"
+        offer       = "WindowsServer"
+       sku         = "2016-Datacenter"
+       version     = "latest"
+    }
+    storage_os_disk {
+       name          = "MDSosdisk3"
+     #  vhd_uri       = "${azurerm_storage_account.azrmstgacc-stdssdlrs-001.primary_blob_endpoint}${azurerm_storage_container.vhds.name}/dcsazprois002-os.vhd"
+        caching       = "ReadWrite"
+        create_option = "FromImage"
+        os_type       = "Windows"
+    }
+     os_profile {
+        computer_name  = "MDSVM3"
+        admin_username = "testadmin"
+        admin_password = "Password1234!"
+    } 
+os_profile_windows_config {
+    provision_vm_agent  = true
+  }
+ }
+####### add VPN gateway and HUB ####
+resource "azurerm_virtual_wan" "MDSWAN" {
+  name                = "MDSLoadBalancer-vwan"
+  resource_group_name = azurerm_resource_group.MDSLB.name
+  location            = azurerm_resource_group.MDSLB.location
+  # virtual_network_name = azurerm_virtual_network.MDSVNET3.name
+}
+
+resource "azurerm_virtual_hub" "MDSHUB" {
+  name                = "MDSLoadBalancer-hub"
+  resource_group_name = azurerm_resource_group.MDSLB.name
+  location            = azurerm_resource_group.MDSLB.location
+  virtual_wan_id      = azurerm_virtual_wan.MDSWAN.id
+  address_prefix      = "10.10.4.0/24"
+}
+
+resource "azurerm_vpn_gateway" "MDSVPNG" {
+  name                = "MDSLoadBalancer-vpng"
+  location            = azurerm_resource_group.MDSLB.location
+  resource_group_name = azurerm_resource_group.MDSLB.name
+  virtual_hub_id      = azurerm_virtual_hub.MDSHUB.id
+  }
+
+
+
